@@ -1,0 +1,10 @@
+[package]
+name = "async-store"
+version = "0.1.0"
+edition = "2018"
+authors = ["Greg Johnston <greg.johnston@gmail.com>"]
+description = "A Redux-inspired Rust state container with a stream-based async API."
+license = "Apache-2.0/MIT"
+readme = "./README.md"
+repository = "https://github.com/gbj/async-store"
+homepage = "https://github.com/gbj/async-store"
