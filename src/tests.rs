@@ -74,3 +74,47 @@ async fn stream_should_close_when_all_senders_dropped() {
     drop(s2);
     assert_eq!(stream.next().await, None);
 }
+
+#[tokio::test]
+async fn readme_example() {
+    use crate::Stream;
+    use futures::stream::StreamExt;
+
+    // Define state, action, and reducer
+    struct State {
+        a: String,
+    }
+
+    impl State {
+        pub fn new() -> Self {
+            Self {
+                a: String::from("Initial value"),
+            }
+        }
+    }
+
+    enum Msg {
+        ClearStr,
+        SetStr(String),
+    }
+
+    fn reducer(state: &mut State, action: Msg) {
+        match action {
+            Msg::ClearStr => state.a = String::from(""),
+            Msg::SetStr(s) => state.a = s,
+        }
+    }
+
+    // Create the actual store
+    let store = Store::new(State::new(), reducer);
+
+    // Derive a Stream from the store
+    let mut stream = store.stream(|state| state.a.clone());
+
+    store.dispatch(Msg::SetStr(String::from("string 2")));
+    store.dispatch(Msg::ClearStr);
+
+    // Poll the stream
+    // It will always give the latest value of the state, without intervening values
+    assert_eq!(stream.next().await, Some(String::from("")));
+}

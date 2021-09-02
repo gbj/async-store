@@ -358,4 +358,4 @@ impl ChangedWaker {
     }
 }
 
-//mod tests;
+mod tests;
