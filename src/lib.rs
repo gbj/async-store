@@ -17,7 +17,10 @@ use std::task::{Context, Poll, Waker};
 pub struct Store<T, A> {
     inner: Arc<RwLock<StoreState<T>>>,
     reducer: Arc<dyn Fn(&mut T, A) + Send + Sync>,
+    middleware: Arc<Mutex<Vec<Middleware<T, A>>>>,
 }
+
+type Middleware<T, A> = Box<dyn Fn(&Store<T, A>, A) -> Option<A>>;
 
 impl<T, A> Store<T, A> {
     /// Creates a new store from an initial value and a reducer function.
@@ -44,7 +47,37 @@ impl<T, A> Store<T, A> {
                 streams: Vec::new(),
             })),
             reducer: Arc::new(reducer),
+            middleware: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Adds custom middleware to the store, which will intercept and can transform any action dispatched.
+    /// ```
+    /// # use async_store::Store;
+    /// type State = i32;
+    /// enum Action {
+    ///    Add(i32),
+    ///    Subtract(i32)
+    /// }
+    /// fn reducer(state: &mut State, action: Action) {
+    ///    match action {
+    ///        Action::Add(n) => *state += n,
+    ///        Action::Subtract(n) => *state -= n,
+    ///    }
+    /// }
+    /// let store = Store::new(0, reducer);
+    /// fn double_middleware(state: &Store<State, Action>, action: Action) -> Option<Action> {
+    ///     match action {
+    ///         Action::Add(n) => Some(Action::Add(n*2)),
+    ///         Action::Subtract(n) => Some(Action::Subtract(n*2))
+    ///     }
+    /// }
+    /// store.add_middleware(double_middleware);
+    /// store.dispatch(Action::Add(10));
+    /// assert_eq!(store.snapshot_cloned(), 20);
+    /// ```
+    pub fn add_middleware(&self, middleware: impl Fn(&Store<T, A>, A) -> Option<A> + 'static) {
+        self.middleware.lock().unwrap().push(Box::new(middleware));
     }
 
     /// Dispatches an event, mutates the contained state by running it through the reducer,
@@ -67,10 +100,35 @@ impl<T, A> Store<T, A> {
     /// assert_eq!(store.snapshot_cloned(), 1);
     /// ```
     pub fn dispatch(&self, action: A) {
+        if self.middleware.lock().unwrap().is_empty() {
+            self.dispatch_reducer(action);
+        } else {
+            self.dispatch_middleware(0, action);
+        }
+    }
+
+    // Runs the reucer
+    pub fn dispatch_reducer(&self, action: A) {
         let mut inner = self.inner.write().unwrap();
         let value = &mut inner.value;
         (self.reducer)(value, action);
         inner.notify(true);
+    }
+
+    // Runs one middleware
+    fn dispatch_middleware(&self, index: usize, action: A) {
+        if index == self.middleware.lock().unwrap().len() {
+            self.dispatch_reducer(action);
+            return;
+        }
+
+        let next = self.middleware.lock().unwrap()[index](self, action);
+
+        if next.is_none() {
+            return;
+        }
+
+        self.dispatch_middleware(index + 1, next.unwrap());
     }
 
     /// Returns a [Stream](futures::stream::Stream), which, whenever polled, yields the callback
@@ -189,6 +247,7 @@ impl<T, A> Clone for Store<T, A> {
         Store {
             inner: self.inner.clone(),
             reducer: self.reducer.clone(),
+            middleware: self.middleware.clone(),
         }
     }
 }
