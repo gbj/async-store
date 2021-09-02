@@ -132,8 +132,9 @@ impl<T, A> Store<T, A> {
     }
 
     /// Returns a [Stream](futures::stream::Stream), which, whenever polled, yields the callback
-    /// function applied to the current state. This can be used to select a member of a complex state struct,
-    /// or to clone values to be used elsewhere.
+    /// function applied to the current state. This can be used to select a member of a complex state struct.
+    /// Because the store retains ownership of the state, you may need to copy or clone the sub-field
+    /// you're trying to access.
     /// ```
     /// # use async_store::Store;
     /// # use futures::stream::StreamExt;
