@@ -1,17 +1,41 @@
 #![feature(async_stream)]
 
+use futures::stream::Stream;
 use std::pin::Pin;
-use std::stream::Stream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::task::{Context, Poll, Waker};
 
+/// A container that holds a state. The state is not manipulated directly, but updated through
+/// actions that are dispatched, then processed by a reducer function.
+///
+/// The store can generate any number of [Stream](futures::stream::Stream)s, which emit the new state
+/// any time an action is dispatched.
+///
+/// The type of a store is determined by the type of the state it holds, an the type of the actions
+/// that can be dispatched (usually an enum).
 pub struct Store<T, A> {
     inner: Arc<RwLock<StoreState<T>>>,
     reducer: Arc<dyn Fn(&mut T, A) + Send + Sync>,
 }
 
 impl<T, A> Store<T, A> {
+    /// Creates a new store from an initial value and a reducer function.
+    /// ```
+    /// # use async_store::Store;
+    /// type State = i32;
+    /// enum Action {
+    ///    Increment,
+    ///    Decrement
+    /// }
+    /// fn reducer(state: &mut State, action: Action) {
+    ///    match action {
+    ///        Action::Increment => *state += 1,
+    ///        Action::Decrement => *state -= 1,
+    ///    }
+    /// }
+    /// let store = Store::new(0, reducer);
+    /// ```
     pub fn new(value: T, reducer: impl Fn(&mut T, A) + Send + Sync + 'static) -> Self {
         Self {
             inner: Arc::new(RwLock::new(StoreState {
@@ -23,6 +47,25 @@ impl<T, A> Store<T, A> {
         }
     }
 
+    /// Dispatches an event, mutates the contained state by running it through the reducer,
+    /// and updates any streams with the latest state.
+    /// ```
+    /// # use async_store::Store;
+    /// # type State = i32;
+    /// # enum Action {
+    /// #    Increment,
+    /// #    Decrement
+    /// # }
+    /// # fn reducer(state: &mut State, action: Action) {
+    /// #   match action {
+    /// #        Action::Increment => *state += 1,
+    /// #        Action::Decrement => *state -= 1,
+    /// #   }
+    /// # }
+    /// let store = Store::new(0, reducer);
+    /// store.dispatch(Action::Increment);
+    /// assert_eq!(store.snapshot_cloned(), 1);
+    /// ```
     pub fn dispatch(&self, action: A) {
         let mut inner = self.inner.write().unwrap();
         let value = &mut inner.value;
@@ -30,6 +73,36 @@ impl<T, A> Store<T, A> {
         inner.notify(true);
     }
 
+    /// Returns a [Stream](futures::stream::Stream), which, whenever polled, yields the callback
+    /// function applied to the current state. This can be used to select a member of a complex state struct,
+    /// or to clone values to be used elsewhere.
+    /// ```
+    /// # use async_store::Store;
+    /// # use futures::stream::StreamExt;
+    /// struct State {
+    ///     x: i32,
+    ///     y: i32,
+    /// };
+    /// enum Action {
+    ///     SetX(i32),
+    ///     SetY(i32)
+    /// }
+    /// # fn reducer(state: &mut State, action: Action) {
+    /// #   match action {
+    /// #        Action::SetX(n) => state.x = n,
+    /// #        Action::SetY(n) => state.y = n,
+    /// #   }
+    /// # }
+    /// # tokio_test::block_on(async {
+    /// let store = Store::new(State { x: 0, y: 0 }, reducer);
+    /// let mut x_stream = store.stream(|state| state.x);
+    /// let mut y_stream = store.stream(|state| state.y);
+    /// store.dispatch(Action::SetX(10));
+    /// store.dispatch(Action::SetY(-10));
+    /// assert_eq!(x_stream.next().await, Some(10));
+    /// assert_eq!(y_stream.next().await, Some(-10));
+    /// # });
+    /// ```
     pub fn stream<U, F>(&self, f: F) -> StoreStream<T, U, F>
     where
         F: Fn(&T) -> U,
@@ -45,6 +118,30 @@ impl<T, A> Store<T, A> {
 }
 
 impl<T, A> Store<T, A> {
+    /// Calls the given function with the current value of the store's state and returns the value.
+    ///
+    /// ```
+    /// # use async_store::Store;
+    /// # struct State {
+    /// #     x: i32,
+    /// #     y: i32,
+    /// # };
+    /// # enum Action {
+    /// #    SetX(i32),
+    /// #    SetY(i32)
+    /// # }
+    /// # fn reducer(state: &mut State, action: Action) {
+    /// #   match action {
+    /// #        Action::SetX(n) => state.x = n,
+    /// #        Action::SetY(n) => state.y = n,
+    /// #   }
+    /// # }
+    /// let store = Store::new(State { x: 0, y: 0 }, reducer);
+    /// store.dispatch(Action::SetX(10));
+    /// store.dispatch(Action::SetY(-10));
+    /// assert_eq!(store.snapshot(|state| state.x), 10);
+    /// assert_eq!(store.snapshot(|state| state.y), -10);
+    /// ```
     pub fn snapshot<F, U>(&self, f: F) -> U
     where
         F: Fn(&T) -> U,
@@ -57,6 +154,30 @@ impl<T, A> Store<T, A>
 where
     T: Clone,
 {
+    /// Returns the current value of the contained state by cloning it.
+    ///
+    /// ```
+    /// # use async_store::Store;
+    /// #[derive(Clone, PartialEq, Debug)]
+    /// struct State {
+    ///     x: i32,
+    ///     y: i32,
+    /// };
+    /// enum Action {
+    ///     SetX(i32),
+    ///     SetY(i32)
+    /// }
+    /// fn reducer(state: &mut State, action: Action) {
+    ///     match action {
+    ///         Action::SetX(n) => state.x = n,
+    ///         Action::SetY(n) => state.y = n,
+    ///     }
+    /// }
+    /// let store = Store::new(State { x: 0, y: 0 }, reducer);
+    /// store.dispatch(Action::SetX(10));
+    /// store.dispatch(Action::SetY(-10));
+    /// assert_eq!(store.snapshot_cloned(), State { x: 10, y: -10 });
+    /// ```
     pub fn snapshot_cloned(&self) -> T {
         self.inner.read().unwrap().value.clone()
     }
@@ -177,3 +298,5 @@ impl ChangedWaker {
         self.changed.swap(false, Ordering::SeqCst)
     }
 }
+
+//mod tests;

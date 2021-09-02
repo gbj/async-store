@@ -8,3 +8,10 @@ license = "Apache-2.0/MIT"
 readme = "./README.md"
 repository = "https://github.com/gbj/async-store"
 homepage = "https://github.com/gbj/async-store"
+
+[dependencies]
+futures = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1.10", features = ["rt", "macros"] }
+tokio-test = "*"
